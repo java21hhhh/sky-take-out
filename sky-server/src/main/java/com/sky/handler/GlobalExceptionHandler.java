@@ -4,7 +4,6 @@ import com.sky.constant.MessageConstant;
 import com.sky.exception.BaseException;
 import com.sky.result.Result;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.logging.log4j.message.ReusableMessage;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -20,7 +19,7 @@ public class GlobalExceptionHandler {
 
     /**
      * 捕获业务异常
-     * @param ex
+     * @param
      * @return
      */
     @ExceptionHandler
@@ -29,6 +28,7 @@ public class GlobalExceptionHandler {
         return Result.error(ex.getMessage());
     }
 
+    @ExceptionHandler
     public Result exceptionHandler(SQLIntegrityConstraintViolationException ex){
         String message = ex.getMessage();
         if(message.contains("Duplicate entry")){
