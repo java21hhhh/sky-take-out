@@ -31,12 +31,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler
     public Result exceptionHandler(SQLIntegrityConstraintViolationException ex){
         String message = ex.getMessage();
-        if(message.contains("Duplicate entry")){
-            String[] split = message.split(",");
-            String username = split[2];
-            String msg =username + MessageConstant.ALREADY_EXIST;
-            return Result.error(msg);
-        }else {
+        if (message != null && message.contains("Duplicate entry")) {
+            // 从 "Duplicate entry 'xxx' for key 'yyy'" 中提取重复值，避免按逗号 split 越界
+            String duplicateValue = message.replaceAll("(?s).*Duplicate entry '(.*?)' for key.*", "$1");
+            return Result.error(duplicateValue + MessageConstant.ALREADY_EXIST);
+        } else {
             return Result.error(MessageConstant.UNKNOWN_ERROR);
         }
     }

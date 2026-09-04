@@ -3,6 +3,8 @@ package com.sky.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
+
 @Mapper
 public interface SetmealMapper {
 
@@ -13,5 +15,13 @@ public interface SetmealMapper {
      */
     @Select("select count(id) from setmeal where category_id = #{categoryId}")
     Integer countByCategoryId(Long id);
+
+    /**
+     * 根据菜品id集合查询关联的套餐数量
+     * @param dishIds
+     * @return
+     */
+    @Select("<script>select count(id) from setmeal_dish where dish_id in <foreach collection='dishIds' item='dishId' separator=',' open='(' close=')'>#{dishId}</foreach></script>")
+    Integer countByDishIds(List<Long> dishIds);
 
 }
