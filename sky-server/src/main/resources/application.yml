@@ -17,6 +17,13 @@ spring:
       username: ${sky.datasource.username}
       password: ${sky.datasource.password}
 
+  redis:
+    # 连接信息来自各环境配置(sky.redis.*)
+    host: ${sky.redis.host}
+    port: ${sky.redis.port}
+    # 本地 redis 未设密码留空即可;如为 redis 设置了 requirepass,在此填入密码
+    password: ${sky.redis.password:}
+
 mybatis:
   #mapper配置文件
   mapper-locations: classpath:mapper/*.xml
