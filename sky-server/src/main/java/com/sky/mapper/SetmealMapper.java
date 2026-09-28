@@ -1,11 +1,16 @@
 package com.sky.mapper;
 
+import com.github.pagehelper.Page;
+import com.sky.annotation.AutoFill;
+import com.sky.dto.SetmealPageQueryDTO;
 import com.sky.entity.Setmeal;
+import com.sky.enumeration.OperationType;
 import com.sky.vo.DishItemVO;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Select;
+import com.sky.vo.SetmealVO;
+import org.apache.ibatis.annotations.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface SetmealMapper {
@@ -43,4 +48,31 @@ public interface SetmealMapper {
             "where sd.setmeal_id = #{setmealId}")
     List<DishItemVO> getDishItemBySetmealId(Long setmealId);
 
+    /**
+     * 新增套餐
+     * @param setmeal
+     */
+
+    @AutoFill(OperationType.INSERT)
+    void addSetmeal(Setmeal setmeal);
+
+    Page<SetmealVO> pageQuery(SetmealPageQueryDTO setmealPageQueryDTO);
+
+    @Select("select *from setmeal where id=#{id}")
+    Setmeal getById(Long id);
+
+    @Delete("delete from setmeal where id=#{id}")
+    void deleteById(Long id);
+
+    void update(Setmeal setmeal);
+
+    /**
+     * 动态条件统计套餐数量（工作台「套餐总览」：已启售/已停售）
+     * <p>
+     * SQL 在 SetmealMapper.xml 里，可传 status / categoryId
+     *
+     * @param map 查询条件
+     * @return 套餐数量
+     */
+    Integer countByMap(Map map);
 }

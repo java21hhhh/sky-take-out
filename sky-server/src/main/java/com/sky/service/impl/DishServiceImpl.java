@@ -8,6 +8,7 @@ import com.sky.entity.Dish;
 import com.sky.entity.DishFlavor;
 import com.sky.constant.MessageConstant;
 import com.sky.context.BaseContext;
+import com.sky.exception.BaseException;
 import com.sky.exception.DeletionNotAllowedException;
 import com.sky.mapper.DishFlavorMapper;
 import com.sky.mapper.DishMapper;
@@ -85,6 +86,11 @@ public class DishServiceImpl implements DishService {
     public DishVO getByIdWithFlavor(Long id) {
         // 查询菜品基本信息
         Dish dish = dishMapper.getById(id);
+        if (dish == null) {
+            // copyProperties 的源对象为 null 会抛 IllegalArgumentException，
+            // 被兜底处理器吞成"未知错误"；这里显式报出原因
+            throw new BaseException(MessageConstant.DISH_NOT_FOUND);
+        }
 
         // 查询口味列表
         List<DishFlavor> flavors = dishFlavorMapper.getByDishId(id);

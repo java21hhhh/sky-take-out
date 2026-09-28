@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface DishMapper {
@@ -66,6 +67,16 @@ public interface DishMapper {
      * @return
      */
     List<Dish> list(Dish dish);
+
+    /**
+     * 动态条件统计菜品数量（工作台「菜品总览」：已启售/已停售）
+     * <p>
+     * SQL 在 DishMapper.xml 里，可传 status / categoryId
+     *
+     * @param map 查询条件
+     * @return 菜品数量
+     */
+    Integer countByMap(Map map);
 }
 
 

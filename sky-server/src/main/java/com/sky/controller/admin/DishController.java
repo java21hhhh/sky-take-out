@@ -1,5 +1,6 @@
 package com.sky.controller.admin;
 
+import com.sky.constant.StatusConstant;
 import com.sky.dto.DishDTO;
 import com.sky.dto.DishPageQueryDTO;
 import com.sky.entity.Dish;
@@ -41,6 +42,23 @@ public class DishController {
         log.info("菜品分页查询：{}", dishPageQueryDTO);
         PageResult pageResult = dishService.pageQuery(dishPageQueryDTO);
         return Result.success(pageResult);
+    }
+
+    /**
+     * 根据分类id查询菜品（新增套餐页面「选择菜品」用）
+     * <p>
+     * 注意路径必须写全：本类没有类级 @RequestMapping，若缺这个方法，
+     * GET /admin/dish/list 会落到下面的 /admin/dish/{id} 上，把 "list" 当成 id 转 Long 而报错。
+     */
+    @GetMapping("/admin/dish/list")
+    @ApiOperation("根据分类id查询菜品")
+    public Result<List<DishVO>> list(Long categoryId) {
+        log.info("根据分类id查询菜品：{}", categoryId);
+        Dish dish = new Dish();
+        dish.setCategoryId(categoryId);
+        dish.setStatus(StatusConstant.ENABLE); //只查起售中的菜品
+        List<DishVO> list = dishService.listWithFlavor(dish);
+        return Result.success(list);
     }
 
     @DeleteMapping("/admin/dish")
