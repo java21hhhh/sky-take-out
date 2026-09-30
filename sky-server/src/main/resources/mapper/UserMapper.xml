@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.sky.mapper.UserMapper">
+
+    <!--
+        这个文件里只放 countByMap 这一条！
+        insert 已经在 UserMapper.java 里用 @Insert 注解定义过了，
+        如果这里再写一个 id="insert"，应用启动会报
+        "already contains value for com.sky.mapper.UserMapper.insert"
+
+        begin/end 用 >= / <=：课程参考实现用的是 > / <，
+        会把恰好 00:00:00 整点注册的用户漏掉
+    -->
+    <select id="countByMap" resultType="java.lang.Integer">
+        select count(id) from user
+        <where>
+            <if test="begin != null">
+                and create_time &gt;= #{begin}
+            </if>
+            <if test="end != null">
+                and create_time &lt;= #{end}
+            </if>
+        </where>
+    </select>
+
+</mapper>

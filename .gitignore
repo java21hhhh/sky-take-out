@@ -4,3 +4,11 @@
 *.class
 *Test.java
 **/test/
+
+# Redis 运行时产生的持久化文件，不是源码
+dump.rdb
+*.rdb
+
+# 日志
+*.log
+logs/
