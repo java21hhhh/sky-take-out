@@ -12,3 +12,7 @@ dump.rdb
 # 日志
 *.log
 logs/
+
+# 真实环境配置：含数据库密码、阿里云 OSS 密钥、微信小程序 AppSecret
+# 模板见同目录的 application-dev.yml.example
+sky-server/src/main/resources/application-dev.yml
