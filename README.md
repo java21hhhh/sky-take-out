@@ -32,7 +32,7 @@ Spring Boot 2.7.3 单体应用，按职责拆成三个 Maven 模块（`sky-commo
 | 语言 / 框架 | Java 11 · Spring Boot 2.7.3 |
 | 持久层 | MyBatis 2.2.0 · PageHelper 1.3.0（分页） · Druid 1.2.1（连接池） |
 | 数据库 | MySQL 8 |
-| 缓存 | Redis（菜品 / 套餐 / 店铺） |
+| 缓存 | Redis（菜品列表 `dish_*`、店铺营业状态 `SHOP_STATUS`） |
 | 实时推送 | Spring WebSocket（来单提醒） |
 | 认证 | JJWT 0.9.1 |
 | 接口文档 | Knife4j 3.0.2（Swagger2） |
