@@ -11,9 +11,14 @@ import com.sky.vo.DishVO;
 import io.swagger.annotations.ApiOperation;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -107,10 +112,53 @@ public class DishController {
      * @param pattern 要匹配的 key 模式，如 dish_*（全部）或 dish_分类id（单个分类）
      */
     private void cleanCache(String pattern) {
-        Set<String> keys = redisTemplate.keys(pattern);
-        if (keys != null && !keys.isEmpty()) {
+        Set<String> keys = scanKeys(pattern);
+        if (!keys.isEmpty()) {
             redisTemplate.delete(keys);
         }
+    }
+
+    /**
+     * 按模式找出所有 key —— 用 SCAN 游标，而不是 KEYS。
+     *
+     * <p>★ 这里改过一处 ★
+     * 原来用的是 {@code redisTemplate.keys(pattern)}，它对应 Redis 的 <b>KEYS</b> 命令。
+     * KEYS 有两个致命点：
+     * <ul>
+     *   <li><b>O(N)</b> —— 要遍历整个 keyspace 才凑齐匹配项，key 越多越慢；</li>
+     *   <li><b>阻塞</b> —— Redis 执行命令是<b>单线程</b>的，KEYS 跑的时候别的命令全部排队。
+     *       线上几十上百万个 key，一句 {@code KEYS dish_*} 就能把整个 Redis 卡住好几秒，
+     *       所有依赖 Redis 的接口跟着一起超时。</li>
+     * </ul>
+     * 所以 KEYS 在生产上属于明令禁止的命令（Redis 官方文档的原话就是：不要在生产环境使用）。
+     *
+     * <p><b>SCAN 好在哪：</b>游标式分批遍历 —— 每次只返回一小批（count 是"建议值"，
+     * Redis 可能多给也可能少给），拿到游标下次接着扫。它把一次长阻塞
+     * 拆成很多次短查询，Redis 有机会在批与批之间处理别的命令。
+     *
+     * <p><b>代价（面试会问）：</b>SCAN 不保证"一次扫完"——
+     * 遍历期间被新增/删除的 key，可能漏掉、也可能重复返回。
+     * 对"清缓存"这个场景无所谓（缓存本来就是清掉让它重建的）；
+     * 但如果拿去干"统计"类的活，就得自己处理重复和漏读。
+     */
+    private Set<String> scanKeys(String pattern) {
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(200)          // 每批约 200 个（只是建议值，Redis 不保证）
+                .build();
+
+        return redisTemplate.execute((RedisCallback<Set<String>>) connection -> {
+            Set<String> keys = new HashSet<>();
+            // Cursor 实现了 Closeable，用完必须关 —— 它背后挂着一个 redis 连接
+            try (Cursor<byte[]> cursor = connection.scan(options)) {
+                while (cursor.hasNext()) {
+                    // key 用的是 StringRedisSerializer（见 RedisConfiguration），
+                    // 所以 byte[] 直接按 UTF-8 还原即可
+                    keys.add(new String(cursor.next(), StandardCharsets.UTF_8));
+                }
+            }
+            return keys;
+        });
     }
 }
 
