@@ -1,0 +1,171 @@
+# sky-take-out
+
+餐饮外卖 SaaS 的**后端服务** —— 同时支撑**商家管理端**和**顾客点餐端**两套接口。
+
+Spring Boot 2.7.3 单体应用，按职责拆成三个 Maven 模块（`sky-common` / `sky-pojo` / `sky-server`）。
+
+---
+
+## 一、业务范围
+
+一共 17 个 Controller，按调用方分成两半：
+
+| | 管理端 `/admin/**` | 用户端 `/user/**` |
+|---|---|---|
+| 认证 | JWT，请求头 `token` | JWT，请求头 `authentication` |
+| 员工 | 登录、增删改查、启用禁用 | — |
+| 分类 | 增删改查、启用禁用 | 按类型查 |
+| 菜品 | 增删改查、起售停售、口味 | 按分类查 |
+| 套餐 | 增删改查、起售停售 | 按分类查 |
+| 订单 | 接单、拒单、派送、完成、取消 | 下单、支付、历史、再来一单 |
+| 店铺 | 营业状态、营业中/打烊 | 查询营业状态 |
+| 其它 | 工作台统计、运营报表（Excel 导出） | 微信登录、购物车、地址簿 |
+
+管理端和用户端**各自一套 JWT 拦截器**，令牌密钥与请求头名都不同，互不通用。
+
+---
+
+## 二、技术栈
+
+| 用途 | 选型 |
+|---|---|
+| 语言 / 框架 | Java 11 · Spring Boot 2.7.3 |
+| 持久层 | MyBatis 2.2.0 · PageHelper 1.3.0（分页） · Druid 1.2.1（连接池） |
+| 数据库 | MySQL 8 |
+| 缓存 | Redis（菜品 / 套餐 / 店铺） |
+| 实时推送 | Spring WebSocket（来单提醒） |
+| 认证 | JJWT 0.9.1 |
+| 接口文档 | Knife4j 3.0.2（Swagger2） |
+| 报表导出 | Apache POI 3.16 |
+| 公共字段填充 | AspectJ 切面 `AutoFillAspect`（创建/更新时间、操作人） |
+
+---
+
+## 三、我改过的地方
+
+> 下面两处是**在原课程实现之外做的**。写在这里是因为它们的价值不在"改了什么"，
+> 而在"为什么原来的写法是错的、代价是什么"。
+
+### 1. 派送中订单的定时任务：调度周期和判断阈值对不上
+
+`sky-server/.../task/OrderTask.java` → `processDeliveryOrder()`
+
+原来的 cron 是 `0 0 1 * * ?` —— **每天凌晨 1 点只跑一次**，但方法里的判断条件写的是
+「派送超过 **60 分钟**仍未完成」。**这两个数字对不上**：
+
+> 下午 13:30 下单、14:00 开始派送的单子，要等到**第二天凌晨 1 点**才会被标记成已完成。
+> 中间十几个小时，订单状态一直是错的 —— 用户端和商家端都挂着一个假的「派送中」。
+
+**改法**：cron 换成 `0 */5 * * * *`（每 5 分钟）。这样「超过 60 分钟」才真的是 60 分钟
+（最坏情况滞后 5 分钟，而不是滞后一整天）。
+
+**代价（明说）**：查询次数从每天 1 次变成每天 288 次。这是刻意的取舍 ——
+一条按 `status + order_time` 的查询很便宜，而订单状态错了是两个端都看得见的体验问题。
+
+**进一步**：真要在"扫表"和"实时"之间两全，正解是**延迟队列**（到点由消息驱动，
+而不是靠轮询去发现）。本仓库没做，留作后续。
+
+### 2. 菜品缓存清理：`KEYS` 换成 `SCAN`
+
+`sky-server/.../controller/admin/DishController.java` → `cleanCache()` / `scanKeys()`
+
+原来用的是 `redisTemplate.keys(pattern)`，它对应 Redis 的 **KEYS** 命令，有两个致命点：
+
+- **O(N)** —— 要遍历整个 keyspace 才凑齐匹配项，key 越多越慢；
+- **阻塞** —— Redis 执行命令是**单线程**的，KEYS 跑的时候别的命令全部排队。
+  线上几十万个 key 时，一句 `KEYS dish_*` 就能把整个 Redis 卡住好几秒，
+  所有依赖 Redis 的接口跟着一起超时。
+
+**改法**：改用 `SCAN` 游标分批遍历（每批 `count(200)`），把一次长阻塞拆成很多次短查询。
+
+**代价（明说）**：SCAN **不保证一次扫完** —— 遍历期间被新增/删除的 key 可能漏掉、也可能重复返回。
+对"清缓存"这个场景无所谓（缓存本来就是清掉让它重建的）；但拿去干统计就得自己处理重复和漏读。
+
+---
+
+## 四、怎么跑
+
+### 前置
+
+- JDK 11、Maven
+- MySQL 8（本地 3306）
+- Redis（本地 6379，未设 `requirepass` 可留空密码）
+
+### 1. 配置
+
+真实配置 `application-dev.yml` **不在仓库里**（含数据库密码、OSS 密钥、微信 AppSecret，
+已被 `.gitignore` 排除）。用模板复制一份再填：
+
+```bash
+cp sky-server/src/main/resources/application-dev.yml.example \
+   sky-server/src/main/resources/application-dev.yml
+```
+
+然后把模板里所有 `<...>` 占位符替换成真实值。
+
+### 2. 数据库
+
+**建表 SQL 不在本仓库内**，需要自己准备 `sky_take_out` 库
+（模板 `application-dev.yml` 里默认就是这个库名）。
+
+### 3. 启动
+
+**要两步** —— `sky-server` 依赖另外两个模块的 artifact，全新克隆时它们还不在本地仓库里：
+
+```bash
+mvn -DskipTests install           # 先把 sky-common / sky-pojo 装进本地仓库
+mvn -pl sky-server spring-boot:run
+```
+
+> ⚠️ 常见坑：写成 `mvn -pl sky-server -am spring-boot:run` 会**失败** ——
+> `-am` 把父工程也拉进 reactor，`spring-boot:run` 会在根 pom 上报
+> `Unable to find a suitable main class`。
+
+- 服务端口 **8080**
+- 接口文档：<http://localhost:8080/doc.html>（Knife4j）
+- 管理端默认账号见数据库 `employee` 表
+
+### 4. 前端
+
+**小程序前端不在本仓库内** —— 这是一个纯后端仓库。
+
+---
+
+## 五、目录结构
+
+```
+sky-take-out
+├── sky-common/            工具与常量（JWT、OSS、异常、上下文）
+│   └── .../constant  context  enumeration  exception  json  properties  result  utils
+├── sky-pojo/              数据模型（DTO / VO / Entity）
+└── sky-server/            业务主体
+    └── src/main/java/com/sky/
+        ├── SkyApplication.java     启动类（@EnableScheduling）
+        ├── controller/admin/       管理端接口 ×9
+        ├── controller/user/        用户端接口 ×8
+        ├── service/impl/           业务实现
+        ├── mapper/                 MyBatis 接口（XML 在 resources/mapper/）
+        ├── interceptor/            两套 JWT 拦截器
+        ├── aspect/                 AutoFillAspect 公共字段填充
+        ├── task/                   定时任务（超时订单 / 派送中订单）
+        ├── websocket/              来单提醒
+        └── config/                 Redis / OSS / WebMvc / WebSocket
+```
+
+---
+
+## 六、这个仓库的边界（先说清楚，免得你 clone 下来踩坑）
+
+- **项目来源**：本仓库源自**苍穹外卖课程项目**的后端实现，包名 `com.sky` 与模块名沿用了课程约定。
+  第三节点名的两处改动是课程之外的。
+- **没有自动化测试** —— 160 个受版本控制的文件里，测试代码为零。
+- **支付是打桩的** —— `OrderServiceImpl.payment()` 是**模拟支付**（代码里有明确注释），
+  没有接入真实微信支付：没有商户号，也没有处理微信的异步回调 `notify`。
+  将来接真实支付时，把 `paySuccess(...)` 那一行挪到回调里即可。
+- **没有建库 SQL、没有前端** —— 见第四节的说明。
+
+---
+
+## 许可
+
+本项目仅用于学习与个人作品展示。课程原始素材版权归原作者所有。
