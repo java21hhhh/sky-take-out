@@ -105,8 +105,16 @@ cp sky-server/src/main/resources/application-dev.yml.example \
 
 ### 2. 数据库
 
-**建表 SQL 不在本仓库内**，需要自己准备 `sky_take_out` 库
-（模板 `application-dev.yml` 里默认就是这个库名）。
+建库脚本在 **`sql/sky_take_out.sql`** —— 包含表结构和业务种子数据
+（员工 / 分类 / 菜品 / 口味 / 套餐），**不含**用户、订单、购物车、地址簿等个人数据。
+直接导入即可：
+
+```bash
+mysql -u root -p < sql/sky_take_out.sql
+```
+
+脚本会创建 `sky_take_out` 库并切换过去；表结构部分带 `DROP TABLE IF EXISTS`，
+重复导入会先清空再重建，**别对着有真实数据的库跑**。
 
 ### 3. 启动
 
@@ -138,7 +146,7 @@ sky-take-out
 ├── sky-common/            工具与常量（JWT、OSS、异常、上下文）
 │   └── .../constant  context  enumeration  exception  json  properties  result  utils
 ├── sky-pojo/              数据模型（DTO / VO / Entity）
-└── sky-server/            业务主体
+├── sky-server/            业务主体
     └── src/main/java/com/sky/
         ├── SkyApplication.java     启动类（@EnableScheduling）
         ├── controller/admin/       管理端接口 ×9
@@ -150,6 +158,7 @@ sky-take-out
         ├── task/                   定时任务（超时订单 / 派送中订单）
         ├── websocket/              来单提醒
         └── config/                 Redis / OSS / WebMvc / WebSocket
+└── sql/                   建库脚本（结构 + 种子数据）
 ```
 
 ---
@@ -158,11 +167,24 @@ sky-take-out
 
 - **项目来源**：本仓库源自**苍穹外卖课程项目**的后端实现，包名 `com.sky` 与模块名沿用了课程约定。
   第三节点名的两处改动是课程之外的。
-- **没有自动化测试** —— 160 个受版本控制的文件里，测试代码为零。
+- **没有自动化测试** —— 仓库里测试代码为零。
 - **支付是打桩的** —— `OrderServiceImpl.payment()` 是**模拟支付**（代码里有明确注释），
   没有接入真实微信支付：没有商户号，也没有处理微信的异步回调 `notify`。
   将来接真实支付时，把 `paySuccess(...)` 那一行挪到回调里即可。
-- **没有建库 SQL、没有前端** —— 见第四节的说明。
+- **建库 SQL 已补、没有前端** —— 建库脚本在 `sql/sky_take_out.sql`，小程序前端不在本仓库。
+
+---
+
+## 七、运行验证（2026-10-17）
+
+在本机实测跑通（不是只编译）：
+
+- 环境：**JDK 11**（Temurin 11.0.32）+ MySQL 8.0 + Redis 7
+- 构建与启动：`mvn -DskipTests install` → `mvn -pl sky-server spring-boot:run`
+- 启动耗时约 **9 秒**；`/doc.html` 返回 **200**
+- `POST /admin/employee/login`（`admin` / `123456`）返回 `code=1` 并签发 JWT
+- `GET /user/shop/status` 返回 `{"code":1,"data":1}`，说明 MySQL 与 Redis 都连通
+- ⚠️ 项目是 Spring Boot 2.7.3 / Java 11，**在 JDK 21 上未验证**；仓库仍无自动化测试。
 
 ---
 
