@@ -25,6 +25,7 @@ import com.sky.mapper.SetmealMapper;
 import com.sky.mapper.ShoppingCartMapper;
 import com.sky.result.PageResult;
 import com.sky.service.OrderService;
+import com.sky.utils.OrderNumberGenerator;
 import com.sky.vo.OrderPaymentVO;
 import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
@@ -69,6 +70,9 @@ public class OrderServiceImpl implements OrderService {
 
     @Autowired
     private OrderStatusUpdater orderStatusUpdater;
+
+    @Autowired
+    private OrderNumberGenerator orderNumberGenerator;
 
 
     //商家端取消订单
@@ -300,7 +304,9 @@ public class OrderServiceImpl implements OrderService {
         orders.setOrderTime(LocalDateTime.now());
         orders.setPayStatus(Orders.UN_PAID);            // 未支付
         orders.setStatus(Orders.PENDING_PAYMENT);       // 待付款
-        orders.setNumber(String.valueOf(System.currentTimeMillis()));  // 订单号
+        // 订单号：时间戳 + 毫秒内序列 + 机器号。不能用 System.currentTimeMillis() ——
+        // 同一毫秒的两个请求会撞号，而 number 列曾经没有任何唯一约束。
+        orders.setNumber(orderNumberGenerator.next());
         orders.setPhone(addressBook.getPhone());
         orders.setConsignee(addressBook.getConsignee());
         orders.setAddress(addressBook.getDetail());

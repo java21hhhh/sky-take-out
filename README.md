@@ -148,7 +148,24 @@ update orders set status = ?, ... where id = ? and status = ?
 **边界（先说清楚）**：打包费没有服务端定价规则（课程里由前端传入），仍按客户端值参与计算；
 要彻底解决，需要一张服务端的打包费规则表。本仓库没做。
 
-### 5. 测试：从「仓库里没有测试」到 34 + 2
+### 5. 订单号：毫秒时间戳会撞号
+
+`sky-server/.../utils/OrderNumberGenerator.java`
+
+原来的订单号是 `String.valueOf(System.currentTimeMillis())` —— 同一毫秒内的两个下单请求
+会拿到同一个号；`number` 列也没有唯一约束，撞了不会报错，只会留下两笔同号订单。
+
+**改法**：订单号 = **13 位毫秒时间戳 + 3 位毫秒内序列 + 2 位机器号**（18 位数字）。
+
+- 同一毫秒内靠序列递增，单机上限 1000 单/毫秒，用完等到下一毫秒；
+- 多实例部署时 `sky.order.worker-id` 必须不同（0~99）；
+- 时钟回拨直接抛异常 —— 宁可下单失败，也不发一个可能重复的号；
+- 数据库补 `uk_order_number` 唯一索引兜底：生成器真出错时插入会失败，
+  而不是静默写入两笔同号订单。
+
+**代价**：生成器是单实例内存状态。多实例要额外分配 workerId；目前默认 0，单实例够用。
+
+### 6. 测试：从「仓库里没有测试」到 40 + 2
 
 先修了一个隐藏问题：`.gitignore` 里有 `*Test.java` 和 `**/test/` 两行（课程模板留下的），
 **所有测试文件都被挡在版本控制外** —— 写了也提交不上去。
@@ -159,7 +176,8 @@ update orders set status = ?, ... where id = ? and status = ?
 |---|---|---|
 | `OrderActionTest` | 9 | 迁移表：哪些状态允许哪些动作 |
 | `OrderStatusUpdaterTest` | 4 | 规则不允许时不碰数据库；条件更新 0 行时返回失败 |
-| `OrderServiceImplTest` | 18 | 动作映射；更新失败报错；支付幂等；下单金额重算与停售/改价拒绝 |
+| `OrderServiceImplTest` | 19 | 动作映射；更新失败报错；支付幂等；下单金额重算与停售/改价拒绝 |
+| `OrderNumberGeneratorTest` | 5 | 连发/并发生成不重复；机器号编码；越界与时钟回拨拒绝 |
 | `OrderTaskTest` | 3 | 同一批里一单并发失败，不能中断整批 |
 | `OrderMapperTest`（集成） | 2 | 真实 MySQL：`WHERE status = ?` 不匹配时影响 0 行 |
 
@@ -257,7 +275,7 @@ sky-take-out
 
 - **项目来源**：本仓库源自**苍穹外卖课程项目**的后端实现，包名 `com.sky` 与模块名沿用了课程约定。
   第三节点名的改动是课程之外的。
-- **测试覆盖有限** —— 34 个单元测试 + 2 个集成测试，集中在订单状态与定时任务；
+- **测试覆盖有限** —— 40 个单元测试 + 2 个集成测试，集中在订单状态与定时任务；
   员工、分类、套餐、报表等模块仍无测试（集成测试需要本地 MySQL / Redis）。
 - **支付是打桩的** —— `OrderServiceImpl.payment()` 是**模拟支付**（代码里有明确注释），
   没有接入真实微信支付：没有商户号，也没有处理微信的异步回调 `notify`。
@@ -276,7 +294,7 @@ sky-take-out
 - `POST /admin/employee/login`（`admin` / `123456`）返回 `code=1` 并签发 JWT
 - `GET /user/shop/status` 返回 `{"code":1,"data":1}`，说明 MySQL 与 Redis 都连通
 - ⚠️ 项目是 Spring Boot 2.7.3 / Java 11，**在 JDK 21 上未验证**。
-- 测试：`mvn test` 跑 34 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
+- 测试：`mvn test` 跑 40 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
 
 ### 索引效果实测（2026-10-18）
 

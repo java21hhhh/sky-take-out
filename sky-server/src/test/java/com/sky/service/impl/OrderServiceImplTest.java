@@ -20,6 +20,7 @@ import com.sky.mapper.OrderDetailMapper;
 import com.sky.mapper.OrderMapper;
 import com.sky.mapper.SetmealMapper;
 import com.sky.mapper.ShoppingCartMapper;
+import com.sky.utils.OrderNumberGenerator;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.websocket.WebSocketServer;
 import org.junit.jupiter.api.AfterEach;
@@ -75,6 +76,8 @@ class OrderServiceImplTest {
     private WebSocketServer webSocketServer;
     @Mock
     private OrderStatusUpdater orderStatusUpdater;
+    @Mock
+    private OrderNumberGenerator orderNumberGenerator;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -335,6 +338,24 @@ class OrderServiceImplTest {
 
         assertThrows(OrderBusinessException.class, () -> orderService.submitOrder(submitDto(0)));
         verify(orderMapper, never()).insert(any(Orders.class));
+    }
+
+    @Test
+    @DisplayName("下单：订单号来自生成器，不是毫秒时间戳")
+    void submitOrderUsesOrderNumberGenerator() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithDish(10L, "10.00", 1)));
+        when(dishMapper.getById(10L))
+                .thenReturn(dish(10L, "宫保鸡丁", "10.00", StatusConstant.ENABLE));
+        when(orderNumberGenerator.next()).thenReturn("202610181234567890");
+        stubInsertBackfillId();
+
+        orderService.submitOrder(submitDto(0));
+
+        ArgumentCaptor<Orders> captor = ArgumentCaptor.forClass(Orders.class);
+        verify(orderMapper).insert(captor.capture());
+        assertEquals("202610181234567890", captor.getValue().getNumber());
     }
 
     @Test
