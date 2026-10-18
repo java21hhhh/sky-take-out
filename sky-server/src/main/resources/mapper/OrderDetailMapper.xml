@@ -14,4 +14,17 @@
         </foreach>
     </insert>
 
+    <!--
+        列表页批量查明细：where order_id in (...)。
+        原来每条订单单独查一次（N+1），一页 10 条要 11 次查询；
+        现在订单分页 1 次 + 明细 1 次 = 2 次。
+    -->
+    <select id="getByOrderIds" resultType="OrderDetail">
+        select * from order_detail
+        where order_id in
+        <foreach collection="orderIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
 </mapper>

@@ -30,4 +30,14 @@ public interface OrderDetailMapper {
     @Select("select * from order_detail where order_id = #{orderId}")
     List<OrderDetail> getByOrderId(Long orderId);
 
+    /**
+     * 按多个订单 id 批量查询明细（SQL 在 XML 里）。
+     *
+     * <p>用于列表页：一页 10 条订单只需 1 次查询，而不是每条订单查一次（N+1）。
+     *
+     * @param orderIds 订单 id 列表，不能为空
+     * @return 所有匹配的明细，调用方按 orderId 分组
+     */
+    List<OrderDetail> getByOrderIds(@Param("orderIds") List<Long> orderIds);
+
 }

@@ -181,22 +181,24 @@ public class OrderServiceImpl implements OrderService {
     //搜索订单
     @Override
     public PageResult conditionSearch(OrdersPageQueryDTO ordersPageQueryDTO) {
-        PageHelper.startPage(ordersPageQueryDTO.getPage(),ordersPageQueryDTO.getPageSize());
+        PageHelper.startPage(ordersPageQueryDTO.getPage(), ordersPageQueryDTO.getPageSize());
 
-        Page<Orders> page =orderMapper.pageQuery(ordersPageQueryDTO);
-        List<Orders> ordersList = new ArrayList<>();
-        if (page != null && !CollectionUtils.isEmpty(page.getResult())) {
-            for (Orders orders : page.getResult()) {
-                OrderVO orderVO = new OrderVO();
-                BeanUtils.copyProperties(orders, orderVO);
+        Page<Orders> page = orderMapper.pageQuery(ordersPageQueryDTO);
+        List<Orders> ordersList = (page == null || CollectionUtils.isEmpty(page.getResult()))
+                ? Collections.emptyList()
+                : page.getResult();
 
-                String orderDishes =getOrderDishesStr(orders);
-                orderVO.setOrderDishes(orderDishes);
+        // N+1 已消除：明细一次批量查出，再按订单 id 分组
+        Map<Long, List<OrderDetail>> detailMap = loadDetailsByOrderIds(ordersList);
 
-                ordersList.add(orderVO);
-            }
-        }return new PageResult(page.getTotal(),ordersList);
-
+        List<OrderVO> result = new ArrayList<>();
+        for (Orders orders : ordersList) {
+            OrderVO orderVO = new OrderVO();
+            BeanUtils.copyProperties(orders, orderVO);
+            orderVO.setOrderDishes(formatDishes(detailMap.get(orders.getId())));
+            result.add(orderVO);
+        }
+        return new PageResult(page == null ? 0L : page.getTotal(), result);
     }
 
     @Override
@@ -226,12 +228,31 @@ public class OrderServiceImpl implements OrderService {
         webSocketServer.sendToAllClient(JSON.toJSONString(map));
     }
 
-    private String getOrderDishesStr(Orders orders) {
-        List<OrderDetail> orderDetailList = orderDetailMapper.getByOrderId(orders.getId());
-        List<String> orderDishList = orderDetailList.stream()
-                .map(x -> x.getName() + "*" + x.getNumber())
+    /**
+     * 一次查出这一页所有订单的明细，按订单 id 分组。
+     *
+     * <p>原实现是每条订单单独查一次（N+1）：一页 10 条订单要发 11 次查询
+     * （1 次分页 + 10 次明细）。现在固定 2 次。
+     */
+    private Map<Long, List<OrderDetail>> loadDetailsByOrderIds(List<Orders> ordersList) {
+        if (ordersList == null || ordersList.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Long> orderIds = ordersList.stream()
+                .map(Orders::getId)
                 .collect(Collectors.toList());
-        return String.join(";", orderDishList);
+        return orderDetailMapper.getByOrderIds(orderIds).stream()
+                .collect(Collectors.groupingBy(OrderDetail::getOrderId));
+    }
+
+    /** 把明细拼成「宫保鸡丁*2;米饭*1」这样的展示字符串 */
+    private String formatDishes(List<OrderDetail> orderDetailList) {
+        if (orderDetailList == null || orderDetailList.isEmpty()) {
+            return "";
+        }
+        return orderDetailList.stream()
+                .map(x -> x.getName() + "*" + x.getNumber())
+                .collect(Collectors.joining(";"));
     }
 
     /**
@@ -457,18 +478,16 @@ public class OrderServiceImpl implements OrderService {
         ordersPageQueryDTO.setStatus(status);
         Page<Orders> page = orderMapper.pageQuery(ordersPageQueryDTO);
 
-        //3. 逐条补上菜品明细，封装成 OrderVO（小程序历史订单列表每条都要展示菜品）
+        //3. 明细一次批量查出，再按订单 id 分组（原来每条订单查一次，N+1）
+        List<Orders> ordersList = page == null ? Collections.emptyList() : page;
+        Map<Long, List<OrderDetail>> detailMap = loadDetailsByOrderIds(ordersList);
+
         List<OrderVO> list = new ArrayList<>();
-        if (page != null && page.getTotal() > 0) {
-            for (Orders orders : page) {
-                List<OrderDetail> orderDetails = orderDetailMapper.getByOrderId(orders.getId());
-
-                OrderVO orderVO = new OrderVO();
-                BeanUtils.copyProperties(orders, orderVO);
-                orderVO.setOrderDetailList(orderDetails);
-
-                list.add(orderVO);
-            }
+        for (Orders orders : ordersList) {
+            OrderVO orderVO = new OrderVO();
+            BeanUtils.copyProperties(orders, orderVO);
+            orderVO.setOrderDetailList(detailMap.getOrDefault(orders.getId(), Collections.emptyList()));
+            list.add(orderVO);
         }
         return new PageResult(page == null ? 0L : page.getTotal(), list);
     }

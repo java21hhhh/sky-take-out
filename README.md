@@ -165,7 +165,21 @@ update orders set status = ?, ... where id = ? and status = ?
 
 **代价**：生成器是单实例内存状态。多实例要额外分配 workerId；目前默认 0，单实例够用。
 
-### 6. 测试：从「仓库里没有测试」到 40 + 2
+### 6. 订单列表：N+1 查询
+
+`sky-server/.../service/impl/OrderServiceImpl.java` → `conditionSearch()` / `pageQuery4User()`
+
+商家订单列表和用户历史订单原来是「先分页查订单，再对每条订单单独查一次明细」：
+一页 10 条订单要发 **11 次查询**（1 次分页 + 10 次明细），页越大越慢。
+
+**改法**：新增 `OrderDetailMapper.getByOrderIds(List<Long>)`，用一条
+`where order_id in (...)` 把这一页的明细一次查回来，再按 `orderId` 分组。
+查询次数固定为 **2 次**，与页大小无关。
+
+**验证**：单测断言 `getByOrderIds` 只调用 1 次、旧的 `getByOrderId` 一次都不调用；
+集成测试插 2 个订单、3 条明细，确认真实 SQL 的 `in (...)` 能全部捞回。
+
+### 7. 测试：从「仓库里没有测试」到 42 + 3
 
 先修了一个隐藏问题：`.gitignore` 里有 `*Test.java` 和 `**/test/` 两行（课程模板留下的），
 **所有测试文件都被挡在版本控制外** —— 写了也提交不上去。
@@ -176,10 +190,11 @@ update orders set status = ?, ... where id = ? and status = ?
 |---|---|---|
 | `OrderActionTest` | 9 | 迁移表：哪些状态允许哪些动作 |
 | `OrderStatusUpdaterTest` | 4 | 规则不允许时不碰数据库；条件更新 0 行时返回失败 |
-| `OrderServiceImplTest` | 19 | 动作映射；更新失败报错；支付幂等；下单金额重算与停售/改价拒绝 |
+| `OrderServiceImplTest` | 21 | 动作映射；更新失败报错；支付幂等；下单金额重算与停售/改价拒绝；列表批量查询 |
 | `OrderNumberGeneratorTest` | 5 | 连发/并发生成不重复；机器号编码；越界与时钟回拨拒绝 |
 | `OrderTaskTest` | 3 | 同一批里一单并发失败，不能中断整批 |
 | `OrderMapperTest`（集成） | 2 | 真实 MySQL：`WHERE status = ?` 不匹配时影响 0 行 |
+| `OrderDetailMapperTest`（集成） | 1 | 真实 MySQL：`where order_id in (...)` 能一次捞回多个订单的明细 |
 
 单元测试不依赖 MySQL / Redis，`mvn test` 直接跑；集成测试打了 `@Tag("integration")`，
 默认排除，需要时：
@@ -275,7 +290,7 @@ sky-take-out
 
 - **项目来源**：本仓库源自**苍穹外卖课程项目**的后端实现，包名 `com.sky` 与模块名沿用了课程约定。
   第三节点名的改动是课程之外的。
-- **测试覆盖有限** —— 40 个单元测试 + 2 个集成测试，集中在订单状态与定时任务；
+- **测试覆盖有限** —— 42 个单元测试 + 3 个集成测试，集中在订单状态与定时任务；
   员工、分类、套餐、报表等模块仍无测试（集成测试需要本地 MySQL / Redis）。
 - **支付是打桩的** —— `OrderServiceImpl.payment()` 是**模拟支付**（代码里有明确注释），
   没有接入真实微信支付：没有商户号，也没有处理微信的异步回调 `notify`。
@@ -294,7 +309,7 @@ sky-take-out
 - `POST /admin/employee/login`（`admin` / `123456`）返回 `code=1` 并签发 JWT
 - `GET /user/shop/status` 返回 `{"code":1,"data":1}`，说明 MySQL 与 Redis 都连通
 - ⚠️ 项目是 Spring Boot 2.7.3 / Java 11，**在 JDK 21 上未验证**。
-- 测试：`mvn test` 跑 40 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
+- 测试：`mvn test` 跑 42 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
 
 ### 索引效果实测（2026-10-18）
 

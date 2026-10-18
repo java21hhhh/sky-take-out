@@ -1,9 +1,12 @@
 package com.sky.service.impl;
 
+import com.github.pagehelper.Page;
+import com.github.pagehelper.PageHelper;
 import com.sky.constant.StatusConstant;
 import com.sky.context.BaseContext;
 import com.sky.dto.OrdersCancelDTO;
 import com.sky.dto.OrdersConfirmDTO;
+import com.sky.dto.OrdersPageQueryDTO;
 import com.sky.dto.OrdersRejectionDTO;
 import com.sky.dto.OrdersSubmitDTO;
 import com.sky.entity.AddressBook;
@@ -20,8 +23,10 @@ import com.sky.mapper.OrderDetailMapper;
 import com.sky.mapper.OrderMapper;
 import com.sky.mapper.SetmealMapper;
 import com.sky.mapper.ShoppingCartMapper;
+import com.sky.result.PageResult;
 import com.sky.utils.OrderNumberGenerator;
 import com.sky.vo.OrderSubmitVO;
+import com.sky.vo.OrderVO;
 import com.sky.websocket.WebSocketServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,6 +39,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -42,10 +48,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -91,6 +100,7 @@ class OrderServiceImplTest {
     @AfterEach
     void tearDown() {
         BaseContext.removeCurrentId();
+        PageHelper.clearPage();   // startPage 会往 ThreadLocal 里放东西，避免污染后续用例
     }
 
     // ---------- 商家取消 ----------
@@ -376,7 +386,66 @@ class OrderServiceImplTest {
         assertEquals(new BigDecimal("22.00"), captor.getValue().getAmount(), "20.00 × 1 + 2");
     }
 
+    // ---------- 列表：N+1 ----------
+
+    @Test
+    @DisplayName("商家订单列表：明细一次批量查询，不再逐条查")
+    void conditionSearchLoadsDetailsInOneQuery() {
+        Page<Orders> page = new Page<>(1, 10);
+        page.add(Orders.builder().id(1L).status(Orders.COMPLETED).build());
+        page.add(Orders.builder().id(2L).status(Orders.COMPLETED).build());
+        page.setTotal(2);
+
+        when(orderMapper.pageQuery(any(OrdersPageQueryDTO.class))).thenReturn(page);
+        when(orderDetailMapper.getByOrderIds(anyList())).thenReturn(Arrays.asList(
+                detail(1L, "宫保鸡丁", 2),
+                detail(1L, "米饭", 1),
+                detail(2L, "鱼香肉丝", 1)
+        ));
+
+        OrdersPageQueryDTO query = new OrdersPageQueryDTO();
+        query.setPage(1);
+        query.setPageSize(10);
+        PageResult result = orderService.conditionSearch(query);
+
+        assertEquals(2L, result.getTotal());
+        assertEquals("宫保鸡丁*2;米饭*1", ((OrderVO) result.getRecords().get(0)).getOrderDishes());
+        assertEquals("鱼香肉丝*1", ((OrderVO) result.getRecords().get(1)).getOrderDishes());
+
+        verify(orderDetailMapper, times(1)).getByOrderIds(anyList());
+        verify(orderDetailMapper, never()).getByOrderId(anyLong());
+    }
+
+    @Test
+    @DisplayName("用户历史订单：明细一次批量查询")
+    void pageQuery4UserLoadsDetailsInOneQuery() {
+        Page<Orders> page = new Page<>(1, 10);
+        page.add(Orders.builder().id(1L).userId(1L).status(Orders.COMPLETED).build());
+        page.setTotal(1);
+
+        when(orderMapper.pageQuery(any(OrdersPageQueryDTO.class))).thenReturn(page);
+        when(orderDetailMapper.getByOrderIds(anyList()))
+                .thenReturn(Collections.singletonList(detail(1L, "宫保鸡丁", 1)));
+
+        PageResult result = orderService.pageQuery4User(1, 10, null);
+
+        OrderVO vo = (OrderVO) result.getRecords().get(0);
+        assertEquals(1, vo.getOrderDetailList().size());
+        assertEquals("宫保鸡丁", vo.getOrderDetailList().get(0).getName());
+
+        verify(orderDetailMapper, times(1)).getByOrderIds(anyList());
+        verify(orderDetailMapper, never()).getByOrderId(anyLong());
+    }
+
     // ---------- 测试数据 ----------
+
+    private static OrderDetail detail(Long orderId, String name, int number) {
+        OrderDetail detail = new OrderDetail();
+        detail.setOrderId(orderId);
+        detail.setName(name);
+        detail.setNumber(number);
+        return detail;
+    }
 
     private static AddressBook addressBook() {
         return AddressBook.builder()
