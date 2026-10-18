@@ -127,7 +127,28 @@ update orders set status = ?, ... where id = ? and status = ?
 **结果**：`OrderStatusUpdater` 成为状态迁移的唯一入口，6 处各写各的判断全部删除；
 定时任务遇到刚支付的订单会跳过并记日志，不再覆盖。
 
-### 4. 测试：从「仓库里没有测试」到 29 + 2
+### 4. 下单：金额不能由客户端说了算
+
+`sky-server/.../service/impl/OrderServiceImpl.java` → `submitOrder()` / `resolveCurrentPrice()`
+
+原实现有三处问题叠在一起：
+
+- **金额来自请求体** —— `BeanUtils.copyProperties(ordersSubmitDTO, orders)` 把前端传来的
+  `amount` 直接写进订单。调用方把金额改成 1 分钱，服务端照单全收。
+- **价格是购物车快照** —— 订单明细复制 `shopping_cart.amount`，商家改价后仍按旧价下单。
+- **不校验在售状态** —— 商品停售了，购物车里的条目照样能提交。
+
+**改法**：提交时逐条回查 `dish` / `setmeal`：
+
+1. 不存在或 `status != 1` → 拒绝（「已停售，请刷新购物车」）；
+2. 数据库当前价 != 购物车里的价 → 拒绝（「价格已变动」），
+   而不是按一个用户没见过的价格扣款；
+3. 金额 = Σ(当前价 × 数量) + 打包费，**覆盖** DTO 里的 `amount`。
+
+**边界（先说清楚）**：打包费没有服务端定价规则（课程里由前端传入），仍按客户端值参与计算；
+要彻底解决，需要一张服务端的打包费规则表。本仓库没做。
+
+### 5. 测试：从「仓库里没有测试」到 34 + 2
 
 先修了一个隐藏问题：`.gitignore` 里有 `*Test.java` 和 `**/test/` 两行（课程模板留下的），
 **所有测试文件都被挡在版本控制外** —— 写了也提交不上去。
@@ -138,7 +159,7 @@ update orders set status = ?, ... where id = ? and status = ?
 |---|---|---|
 | `OrderActionTest` | 9 | 迁移表：哪些状态允许哪些动作 |
 | `OrderStatusUpdaterTest` | 4 | 规则不允许时不碰数据库；条件更新 0 行时返回失败 |
-| `OrderServiceImplTest` | 13 | 每个动作交给正确的 action；更新失败报错；支付回调幂等 |
+| `OrderServiceImplTest` | 18 | 动作映射；更新失败报错；支付幂等；下单金额重算与停售/改价拒绝 |
 | `OrderTaskTest` | 3 | 同一批里一单并发失败，不能中断整批 |
 | `OrderMapperTest`（集成） | 2 | 真实 MySQL：`WHERE status = ?` 不匹配时影响 0 行 |
 
@@ -236,7 +257,7 @@ sky-take-out
 
 - **项目来源**：本仓库源自**苍穹外卖课程项目**的后端实现，包名 `com.sky` 与模块名沿用了课程约定。
   第三节点名的改动是课程之外的。
-- **测试覆盖有限** —— 29 个单元测试 + 2 个集成测试，集中在订单状态与定时任务；
+- **测试覆盖有限** —— 34 个单元测试 + 2 个集成测试，集中在订单状态与定时任务；
   员工、分类、套餐、报表等模块仍无测试（集成测试需要本地 MySQL / Redis）。
 - **支付是打桩的** —— `OrderServiceImpl.payment()` 是**模拟支付**（代码里有明确注释），
   没有接入真实微信支付：没有商户号，也没有处理微信的异步回调 `notify`。
@@ -255,7 +276,7 @@ sky-take-out
 - `POST /admin/employee/login`（`admin` / `123456`）返回 `code=1` 并签发 JWT
 - `GET /user/shop/status` 返回 `{"code":1,"data":1}`，说明 MySQL 与 Redis 都连通
 - ⚠️ 项目是 Spring Boot 2.7.3 / Java 11，**在 JDK 21 上未验证**。
-- 测试：`mvn test` 跑 29 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
+- 测试：`mvn test` 跑 34 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
 
 ### 索引效果实测（2026-10-18）
 

@@ -1,16 +1,29 @@
 package com.sky.service.impl;
 
+import com.sky.constant.StatusConstant;
+import com.sky.context.BaseContext;
 import com.sky.dto.OrdersCancelDTO;
 import com.sky.dto.OrdersConfirmDTO;
 import com.sky.dto.OrdersRejectionDTO;
+import com.sky.dto.OrdersSubmitDTO;
+import com.sky.entity.AddressBook;
+import com.sky.entity.Dish;
+import com.sky.entity.OrderDetail;
 import com.sky.entity.Orders;
+import com.sky.entity.Setmeal;
+import com.sky.entity.ShoppingCart;
 import com.sky.enumeration.OrderAction;
 import com.sky.exception.OrderBusinessException;
 import com.sky.mapper.AddressBookMapper;
+import com.sky.mapper.DishMapper;
 import com.sky.mapper.OrderDetailMapper;
 import com.sky.mapper.OrderMapper;
+import com.sky.mapper.SetmealMapper;
 import com.sky.mapper.ShoppingCartMapper;
+import com.sky.vo.OrderSubmitVO;
 import com.sky.websocket.WebSocketServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +32,10 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -26,6 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -50,12 +68,27 @@ class OrderServiceImplTest {
     @Mock
     private ShoppingCartMapper shoppingCartMapper;
     @Mock
+    private DishMapper dishMapper;
+    @Mock
+    private SetmealMapper setmealMapper;
+    @Mock
     private WebSocketServer webSocketServer;
     @Mock
     private OrderStatusUpdater orderStatusUpdater;
 
     @InjectMocks
     private OrderServiceImpl orderService;
+
+    @BeforeEach
+    void setUp() {
+        // 下单 / 支付都会从 ThreadLocal 取当前用户 id
+        BaseContext.setCurrentId(1L);
+    }
+
+    @AfterEach
+    void tearDown() {
+        BaseContext.removeCurrentId();
+    }
 
     // ---------- 商家取消 ----------
 
@@ -229,7 +262,156 @@ class OrderServiceImplTest {
         verify(webSocketServer, never()).sendToAllClient(anyString());
     }
 
+    // ---------- 下单 ----------
+
+    @Test
+    @DisplayName("下单：金额由服务端按当前价重算，客户端传来的 amount 被忽略")
+    void submitOrderComputesAmountServerSide() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithDish(10L, "10.00", 2)));
+        when(dishMapper.getById(10L))
+                .thenReturn(dish(10L, "宫保鸡丁", "10.00", StatusConstant.ENABLE));
+        stubInsertBackfillId();
+
+        OrderSubmitVO vo = orderService.submitOrder(submitDto(3));
+
+        // 客户端在 DTO 里传的是 0.01；服务端应重算为 10.00 × 2 + 打包费 3 = 23.00
+        ArgumentCaptor<Orders> orderCaptor = ArgumentCaptor.forClass(Orders.class);
+        verify(orderMapper).insert(orderCaptor.capture());
+        assertEquals(new BigDecimal("23.00"), orderCaptor.getValue().getAmount());
+        assertEquals(new BigDecimal("23.00"), vo.getOrderAmount());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<OrderDetail>> detailCaptor = ArgumentCaptor.forClass(List.class);
+        verify(orderDetailMapper).insertBatch(detailCaptor.capture());
+        OrderDetail detail = detailCaptor.getValue().get(0);
+        assertEquals(99L, detail.getOrderId());
+        assertEquals("宫保鸡丁", detail.getName(), "名称应刷新为数据库当前值");
+        assertEquals(new BigDecimal("10.00"), detail.getAmount());
+        assertEquals(Integer.valueOf(2), detail.getNumber());
+
+        verify(shoppingCartMapper).deleteByUserId(1L);
+    }
+
+    @Test
+    @DisplayName("下单：购物车价格与数据库不一致时拒绝，不落订单")
+    void submitOrderRejectsPriceChange() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithDish(10L, "10.00", 1)));
+        when(dishMapper.getById(10L))
+                .thenReturn(dish(10L, "宫保鸡丁", "12.00", StatusConstant.ENABLE));
+
+        assertThrows(OrderBusinessException.class, () -> orderService.submitOrder(submitDto(0)));
+
+        verify(orderMapper, never()).insert(any(Orders.class));
+        verify(orderDetailMapper, never()).insertBatch(any());
+        verify(shoppingCartMapper, never()).deleteByUserId(any());
+    }
+
+    @Test
+    @DisplayName("下单：菜品已停售时拒绝")
+    void submitOrderRejectsDisabledDish() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithDish(10L, "10.00", 1)));
+        when(dishMapper.getById(10L))
+                .thenReturn(dish(10L, "宫保鸡丁", "10.00", StatusConstant.DISABLE));
+
+        assertThrows(OrderBusinessException.class, () -> orderService.submitOrder(submitDto(0)));
+        verify(orderMapper, never()).insert(any(Orders.class));
+    }
+
+    @Test
+    @DisplayName("下单：套餐已停售时拒绝")
+    void submitOrderRejectsDisabledSetmeal() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithSetmeal(20L, "20.00", 1)));
+        when(setmealMapper.getById(20L))
+                .thenReturn(Setmeal.builder().id(20L).name("双人套餐")
+                        .price(new BigDecimal("20.00")).status(StatusConstant.DISABLE).build());
+
+        assertThrows(OrderBusinessException.class, () -> orderService.submitOrder(submitDto(0)));
+        verify(orderMapper, never()).insert(any(Orders.class));
+    }
+
+    @Test
+    @DisplayName("下单：套餐正常时按套餐当前价计算")
+    void submitOrderSetmealUsesCurrentPrice() {
+        when(addressBookMapper.getById(1L)).thenReturn(addressBook());
+        when(shoppingCartMapper.list(any(ShoppingCart.class)))
+                .thenReturn(Collections.singletonList(cartWithSetmeal(20L, "20.00", 1)));
+        when(setmealMapper.getById(20L))
+                .thenReturn(Setmeal.builder().id(20L).name("双人套餐")
+                        .price(new BigDecimal("20.00")).status(StatusConstant.ENABLE).build());
+        stubInsertBackfillId();
+
+        orderService.submitOrder(submitDto(2));
+
+        ArgumentCaptor<Orders> captor = ArgumentCaptor.forClass(Orders.class);
+        verify(orderMapper).insert(captor.capture());
+        assertEquals(new BigDecimal("22.00"), captor.getValue().getAmount(), "20.00 × 1 + 2");
+    }
+
     // ---------- 测试数据 ----------
+
+    private static AddressBook addressBook() {
+        return AddressBook.builder()
+                .id(1L).userId(1L).consignee("张三").phone("13800000000").detail("某地址")
+                .build();
+    }
+
+    private static OrdersSubmitDTO submitDto(int packAmount) {
+        OrdersSubmitDTO dto = new OrdersSubmitDTO();
+        dto.setAddressBookId(1L);
+        dto.setPayMethod(1);
+        dto.setPackAmount(packAmount);
+        dto.setTablewareNumber(1);
+        dto.setDeliveryStatus(1);
+        dto.setTablewareStatus(1);
+        dto.setAmount(new BigDecimal("0.01"));   // 客户端故意传一个假金额
+        return dto;
+    }
+
+    private static ShoppingCart cartWithDish(Long dishId, String amount, int number) {
+        ShoppingCart cart = new ShoppingCart();
+        cart.setId(100L);
+        cart.setUserId(1L);
+        cart.setDishId(dishId);
+        cart.setName("旧菜名");
+        cart.setImage("old.png");
+        cart.setAmount(new BigDecimal(amount));
+        cart.setNumber(number);
+        return cart;
+    }
+
+    private static ShoppingCart cartWithSetmeal(Long setmealId, String amount, int number) {
+        ShoppingCart cart = new ShoppingCart();
+        cart.setId(101L);
+        cart.setUserId(1L);
+        cart.setSetmealId(setmealId);
+        cart.setName("旧套餐名");
+        cart.setImage("old.png");
+        cart.setAmount(new BigDecimal(amount));
+        cart.setNumber(number);
+        return cart;
+    }
+
+    private static Dish dish(Long id, String name, String price, Integer status) {
+        return Dish.builder().id(id).name(name).image("new.png")
+                .price(new BigDecimal(price)).status(status).build();
+    }
+
+    /** 模拟 useGeneratedKeys 回填主键 */
+    private void stubInsertBackfillId() {
+        doAnswer(invocation -> {
+            Orders order = invocation.getArgument(0);
+            order.setId(99L);
+            return null;
+        }).when(orderMapper).insert(any(Orders.class));
+    }
 
     private static Orders order(Long id, Integer status) {
         return Orders.builder().id(id).status(status).build();

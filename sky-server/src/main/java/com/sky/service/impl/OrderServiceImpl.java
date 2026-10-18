@@ -4,19 +4,24 @@ import com.alibaba.fastjson.JSON;
 import com.github.pagehelper.Page;
 import com.github.pagehelper.PageHelper;
 import com.sky.constant.MessageConstant;
+import com.sky.constant.StatusConstant;
 import com.sky.context.BaseContext;
 import com.sky.dto.*;
 import com.sky.entity.AddressBook;
+import com.sky.entity.Dish;
 import com.sky.entity.OrderDetail;
 import com.sky.entity.Orders;
+import com.sky.entity.Setmeal;
 import com.sky.entity.ShoppingCart;
 import com.sky.enumeration.OrderAction;
 import com.sky.exception.AddressBookBusinessException;
 import com.sky.exception.OrderBusinessException;
 import com.sky.exception.ShoppingCartBusinessException;
 import com.sky.mapper.AddressBookMapper;
+import com.sky.mapper.DishMapper;
 import com.sky.mapper.OrderDetailMapper;
 import com.sky.mapper.OrderMapper;
+import com.sky.mapper.SetmealMapper;
 import com.sky.mapper.ShoppingCartMapper;
 import com.sky.result.PageResult;
 import com.sky.service.OrderService;
@@ -32,6 +37,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -51,6 +57,12 @@ public class OrderServiceImpl implements OrderService {
 
     @Autowired
     private ShoppingCartMapper shoppingCartMapper;
+
+    @Autowired
+    private DishMapper dishMapper;
+
+    @Autowired
+    private SetmealMapper setmealMapper;
 
     @Autowired
     private WebSocketServer webSocketServer;
@@ -242,7 +254,23 @@ public class OrderServiceImpl implements OrderService {
             throw new ShoppingCartBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
         }
 
-        //3. 向订单表插入 1 条数据
+        //3. 逐条回查商品：必须仍在售，且价格与加购时一致。
+        //   ★ 原来的实现直接信任前端传来的 amount（BeanUtils 把 DTO 的 amount 拷进订单），
+        //   也没有任何在售校验 —— 调用方可以把金额改成 1 分钱；商家改价或停售后，
+        //   用户仍能按购物车里的旧价下单。现在金额由服务端按数据库当前价格重算。
+        BigDecimal goodsAmount = BigDecimal.ZERO;
+        for (ShoppingCart cart : shoppingCartList) {
+            BigDecimal currentPrice = resolveCurrentPrice(cart);
+
+            // 加购后商家改过价：宁可让用户刷新购物车，也不要按一个他没见过的价格扣款
+            if (currentPrice.compareTo(cart.getAmount()) != 0) {
+                throw new OrderBusinessException("「" + cart.getName() + "」价格已变动，请刷新购物车后重新下单");
+            }
+            cart.setAmount(currentPrice);
+            goodsAmount = goodsAmount.add(currentPrice.multiply(BigDecimal.valueOf(cart.getNumber())));
+        }
+
+        //4. 向订单表插入 1 条数据
         //   下面 4 个字段前端都可能不传，必须兜底，否则全被 GlobalExceptionHandler 兜成"未知错误"：
         //   ① packAmount / tablewareNumber：Orders 里是基本类型 int，而 DTO 里是 Integer。
         //      BeanUtils.copyProperties 内部不做 null 判断，会把 null 直接塞给 int 的 setter 并抛
@@ -267,6 +295,8 @@ public class OrderServiceImpl implements OrderService {
 
         Orders orders = new Orders();
         BeanUtils.copyProperties(ordersSubmitDTO, orders);
+        // 商品金额 + 打包费。DTO 里的 amount 到此为止不再使用 —— 服务端重算的值覆盖它
+        orders.setAmount(goodsAmount.add(BigDecimal.valueOf(ordersSubmitDTO.getPackAmount())));
         orders.setOrderTime(LocalDateTime.now());
         orders.setPayStatus(Orders.UN_PAID);            // 未支付
         orders.setStatus(Orders.PENDING_PAYMENT);       // 待付款
@@ -277,7 +307,7 @@ public class OrderServiceImpl implements OrderService {
         orders.setUserId(userId);
         orderMapper.insert(orders);
 
-        //4. 向订单明细表插入 n 条数据
+        //5. 向订单明细表插入 n 条数据（cart 里的 name / image / amount 已在第 3 步刷新为当前值）
         List<OrderDetail> orderDetailList = new ArrayList<>();
         for (ShoppingCart cart : shoppingCartList) {
             OrderDetail orderDetail = new OrderDetail();
@@ -288,16 +318,43 @@ public class OrderServiceImpl implements OrderService {
         }
         orderDetailMapper.insertBatch(orderDetailList);
 
-        //5. 清空当前用户的购物车
+        //6. 清空当前用户的购物车
         shoppingCartMapper.deleteByUserId(userId);
 
-        //6. 封装返回结果
+        //7. 封装返回结果
         return OrderSubmitVO.builder()
                 .id(orders.getId())
                 .orderNumber(orders.getNumber())
                 .orderAmount(orders.getAmount())
                 .orderTime(orders.getOrderTime())
                 .build();
+    }
+
+    /**
+     * 回查购物车条目对应的菜品 / 套餐，校验在售状态，
+     * 并把购物车里的名称、图片刷新成数据库当前值。
+     *
+     * @return 数据库里的当前单价
+     * @throws OrderBusinessException 商品不存在或已停售
+     */
+    private BigDecimal resolveCurrentPrice(ShoppingCart cart) {
+        if (cart.getDishId() != null) {
+            Dish dish = dishMapper.getById(cart.getDishId());
+            if (dish == null || !StatusConstant.ENABLE.equals(dish.getStatus())) {
+                throw new OrderBusinessException("「" + cart.getName() + "」已停售，请刷新购物车");
+            }
+            cart.setName(dish.getName());
+            cart.setImage(dish.getImage());
+            return dish.getPrice();
+        }
+
+        Setmeal setmeal = setmealMapper.getById(cart.getSetmealId());
+        if (setmeal == null || !StatusConstant.ENABLE.equals(setmeal.getStatus())) {
+            throw new OrderBusinessException("「" + cart.getName() + "」已停售，请刷新购物车");
+        }
+        cart.setName(setmeal.getName());
+        cart.setImage(setmeal.getImage());
+        return setmeal.getPrice();
     }
 
     /**
