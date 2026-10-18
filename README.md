@@ -316,6 +316,8 @@ sky-take-out
 - `GET /user/shop/status` 返回 `{"code":1,"data":1}`，说明 MySQL 与 Redis 都连通
 - ⚠️ 项目是 Spring Boot 2.7.3 / Java 11，**在 JDK 21 上未验证**。
 - 测试：`mvn test` 跑 44 个单元测试（不依赖 MySQL / Redis）；集成测试默认排除。
+- 持续集成：GitHub Actions 在 push / PR 到 `main` 时自动执行同一套单元测试
+  （`.github/workflows/test.yml`，JDK 11 + Maven 缓存），当前为绿色。
 
 ### 索引效果实测（2026-10-18）
 
