@@ -1,5 +1,7 @@
 # sky-take-out
 
+[![test](https://github.com/java21hhhh/sky-take-out/actions/workflows/test.yml/badge.svg)](https://github.com/java21hhhh/sky-take-out/actions/workflows/test.yml)
+
 餐饮外卖 SaaS 的**后端服务** —— 同时支撑**商家管理端**和**顾客点餐端**两套接口。
 
 Spring Boot 2.7.3 单体应用，按职责拆成三个 Maven 模块（`sky-common` / `sky-pojo` / `sky-server`）。
