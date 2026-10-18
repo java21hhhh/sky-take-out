@@ -20,7 +20,18 @@ jobs:
           java-version: '11'
           cache: maven
 
+      - name: Environment
+        run: |
+          java -version
+          mvn -v
+
       # 只跑单元测试：44 个用例不依赖 MySQL / Redis。
       # 集成测试打了 @Tag("integration")，surefire 默认排除（见 sky-server/pom.xml）。
+      # 失败时把 Maven 输出尾部写进检查注解，方便在不登录的情况下定位问题。
       - name: Unit tests
-        run: mvn -B test
+        run: |
+          if ! mvn -B test > mvn.log 2>&1; then
+            echo "::error title=Maven failure::$(tail -n 60 mvn.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            exit 1
+          fi
+          tail -n 20 mvn.log
