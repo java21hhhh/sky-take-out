@@ -1,7 +1,9 @@
 package com.sky.task;
 
 import com.sky.entity.Orders;
+import com.sky.enumeration.OrderAction;
 import com.sky.mapper.OrderMapper;
+import com.sky.service.impl.OrderStatusUpdater;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,6 +19,9 @@ public class OrderTask {
     @Autowired
     private OrderMapper orderMapper;
 
+    @Autowired
+    private OrderStatusUpdater orderStatusUpdater;
+
     @Scheduled(cron = "0 * * * * *")
     public void processTimeOutOrder() {
         log.info("定时处理超时订单：{}", LocalDateTime.now());
@@ -25,15 +30,21 @@ public class OrderTask {
 
         List<Orders> ordersList = orderMapper.getByStatusAndOrderTime(Orders.PENDING_PAYMENT,time);
 
-        if(!ordersList.isEmpty()){
-            for(Orders orders:ordersList){
-                orders.setStatus(Orders.CANCELLED);
-                orders.setCancelReason("订单超时");
-                orders.setCancelTime(LocalDateTime.now());
-                orderMapper.update(orders);
+        // ★ 这里原来有一处并发缺陷 ★
+        // 原实现是「查出来 → 无条件 update 成已取消」。但查完之后、更新之前，
+        // 用户可能刚好付了款：订单已经变成「待接单 / 已支付」，照样被改回「已取消」。
+        // 结果就是钱收了、单没了。
+        // 现在用条件更新：要求状态仍是「待付款」，影响 0 行就说明已被别人改过，跳过。
+        for (Orders orders : ordersList) {
+            Orders update = new Orders();
+            update.setId(orders.getId());
+            update.setCancelReason("订单超时");
+            update.setCancelTime(LocalDateTime.now());
+
+            if (!orderStatusUpdater.change(update, Orders.PENDING_PAYMENT, OrderAction.TIMEOUT_CANCEL)) {
+                log.info("订单 {} 状态已变更（可能刚支付），跳过超时取消", orders.getId());
             }
         }
-
     }
     /**
      * 处理派送中的订单：超过 60 分钟仍未完成的，自动置为已完成。
@@ -62,10 +73,14 @@ public class OrderTask {
 
         List<Orders> ordersList =orderMapper.getByStatusAndOrderTime(Orders.DELIVERY_IN_PROGRESS,time);
 
-        if (!ordersList.isEmpty()){
-            for(Orders orders:ordersList){
-                orders.setStatus(Orders.COMPLETED);
-                orderMapper.update(orders);
+        // 同样改成条件更新：只有状态仍是「派送中」才允许置为已完成。
+        // 如果这期间商家已经手动点过完成、或订单被取消，影响 0 行，跳过即可。
+        for (Orders orders : ordersList) {
+            Orders update = new Orders();
+            update.setId(orders.getId());
+
+            if (!orderStatusUpdater.change(update, Orders.DELIVERY_IN_PROGRESS, OrderAction.AUTO_COMPLETE)) {
+                log.info("订单 {} 状态已变更，跳过自动完成", orders.getId());
             }
         }
     }

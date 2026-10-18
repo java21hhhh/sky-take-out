@@ -25,12 +25,24 @@ public interface OrderMapper {
      */
     void insert(Orders orders);
 
+    /* 原来的无参数条件 update(Orders) 已删除：
+       它允许绕过状态校验直接改 status，是这次要根治的入口。
+       所有状态变更统一走下面的 updateStatus。 */
+
     /**
-     * 修改订单信息（只更新传入的非空字段）
+     * 带状态条件的更新（乐观锁）。
      *
-     * @param orders 订单
+     * <p>SQL 里带 {@code where id = ? and status = expectedStatus}：
+     * 影响行数为 0，说明「查到状态」和「真正更新」之间，订单已经被别的请求改掉了
+     * （比如用户刚好付了款，或者另一个管理员也点了取消）。
+     *
+     * <p>所有状态流转都必须走这条 SQL，不能再用无条件的 {@link #update(Orders)}。
+     *
+     * @param order          要写入的字段（必须带 id；status 由迁移表给出）
+     * @param expectedStatus 期望的当前状态
+     * @return 影响行数：1 表示迁移成功，0 表示状态已变
      */
-    void update(Orders orders);
+    int updateStatus(@Param("order") Orders order, @Param("expectedStatus") Integer expectedStatus);
 
     /**
      * 分页条件查询，按下单时间倒序

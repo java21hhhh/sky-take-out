@@ -10,6 +10,7 @@ import com.sky.entity.AddressBook;
 import com.sky.entity.OrderDetail;
 import com.sky.entity.Orders;
 import com.sky.entity.ShoppingCart;
+import com.sky.enumeration.OrderAction;
 import com.sky.exception.AddressBookBusinessException;
 import com.sky.exception.OrderBusinessException;
 import com.sky.exception.ShoppingCartBusinessException;
@@ -54,16 +55,28 @@ public class OrderServiceImpl implements OrderService {
     @Autowired
     private WebSocketServer webSocketServer;
 
+    @Autowired
+    private OrderStatusUpdater orderStatusUpdater;
+
 
     //商家端取消订单
     @Override
     public void cancel(OrdersCancelDTO ordersCancelDTO) {
-        Orders orders = new Orders();                                    // 1. 创建对象
-        orders.setId(ordersCancelDTO.getId());                           // 2. 设置 id
-        orders.setStatus(Orders.CANCELLED);                              // 3. 改状态
-        orders.setCancelReason(ordersCancelDTO.getCancelReason());       // 4. 记录原因
-        orders.setCancelTime(LocalDateTime.now());                       // 5. 记录时间
-        orderMapper.update(orders);
+        // 原实现按 id 无条件更新，不看当前状态 —— 已完成的订单也能被"取消"。
+        // 现在先按迁移表校验业务规则，再用 WHERE status = 当前状态 的条件更新挡住并发。
+        Orders orderDB = orderMapper.getById(ordersCancelDTO.getId());
+        if (orderDB == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
+        }
+
+        Orders orders = new Orders();
+        orders.setId(ordersCancelDTO.getId());
+        orders.setCancelReason(ordersCancelDTO.getCancelReason());
+        orders.setCancelTime(LocalDateTime.now());
+
+        if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.CANCEL_BY_ADMIN)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
 
     //统计个状态的订单
@@ -82,36 +95,38 @@ public class OrderServiceImpl implements OrderService {
     //完成订单
     @Override
     public void complete(Long id) {
-        // 只有「派送中」的订单才能完成，其余状态（含已完成、已取消）一律拒绝。
-        // 用 equals 而不是 ==：Orders 的状态常量是 Integer，== 比的是引用，只靠 Integer 缓存侥幸成立。
+        // 只有「派送中」的订单才能完成。原来先查后改，两步之间状态可能被改掉；
+        // 现在规则交给迁移表，并发交给 WHERE status = 期望值。
         Orders orderDB = orderMapper.getById(id);
-        if (orderDB == null || !Orders.DELIVERY_IN_PROGRESS.equals(orderDB.getStatus())) {
-            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        if (orderDB == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
-        // 3. 构造更新对象，只设置需要修改的字段
+
         Orders orders = new Orders();
         orders.setId(id);
-        orders.setStatus(Orders.COMPLETED);                 // 状态改为“已完成”
-        orders.setDeliveryTime(LocalDateTime.now());        // 记录送达时间
+        orders.setDeliveryTime(LocalDateTime.now());
 
-        // 4. 执行更新
-        orderMapper.update(orders);
-
+        if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.COMPLETE)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
     //拒单
     @Override
     public void rejection(OrdersRejectionDTO ordersRejectionDTO) {
         // 只有「待接单」的订单才能拒单
         Orders orderDB = orderMapper.getById(ordersRejectionDTO.getId());
-        if (orderDB == null || !Orders.TO_BE_CONFIRMED.equals(orderDB.getStatus())) {
-            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        if (orderDB == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
+
         Orders orders = new Orders();
         orders.setId(ordersRejectionDTO.getId());
-        orders.setStatus(Orders.CANCELLED);
         orders.setRejectionReason(ordersRejectionDTO.getRejectionReason());
         orders.setCancelTime(LocalDateTime.now());
-        orderMapper.update(orders);
+
+        if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.REJECT)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
 
     //接单
@@ -119,28 +134,32 @@ public class OrderServiceImpl implements OrderService {
     public void confirm(OrdersConfirmDTO ordersConfirmDTO) {
         // 只有「待接单」的订单才能接单
         Orders orderDB = orderMapper.getById(ordersConfirmDTO.getId());
-        if (orderDB == null || !Orders.TO_BE_CONFIRMED.equals(orderDB.getStatus())) {
-            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        if (orderDB == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
 
-        Orders orders =Orders.builder()
-                .id(ordersConfirmDTO.getId())
-                .status(Orders.CONFIRMED)
-                .build();
-        orderMapper.update(orders);
+        Orders orders = new Orders();
+        orders.setId(ordersConfirmDTO.getId());
+
+        if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.CONFIRM)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
 
     @Override
     public void delivery(Long id) {
         // 只有「已接单」的订单才能派送（待接单需先接单）
         Orders orderDB = orderMapper.getById(id);
-        if (orderDB == null || !Orders.CONFIRMED.equals(orderDB.getStatus())) {
-            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        if (orderDB == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
+
         Orders orders = new Orders();
         orders.setId(id);
-        orders.setStatus(Orders.DELIVERY_IN_PROGRESS);
-        orderMapper.update(orders);
+
+        if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.DELIVER)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
 
     //搜索订单
@@ -329,16 +348,26 @@ public class OrderServiceImpl implements OrderService {
             throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
 
-        //2. 更新订单状态、支付状态、结账时间
+        //2. 幂等：真实支付平台的回调会重复通知。
+        //   已经付过的单直接返回，否则第二次回调会因为「待付款 -> 待接单」不合法而报错。
+        if (Orders.PAID.equals(ordersDB.getPayStatus())) {
+            return;
+        }
+
+        //3. 更新订单状态、支付状态、结账时间
         Orders orders = Orders.builder()
                 .id(ordersDB.getId())
-                .status(Orders.TO_BE_CONFIRMED)     // 待接单
                 .payStatus(Orders.PAID)             // 已支付
                 .checkoutTime(LocalDateTime.now())
                 .build();
-        orderMapper.update(orders);
 
-        // 3. 推送来单提醒 ← 加在这里
+        // 状态由迁移表决定：待付款 -> 待接单。
+        // 如果这期间订单已被取消，条件更新会影响 0 行，这里直接报错，不会覆盖取消结果。
+        if (!orderStatusUpdater.change(orders, ordersDB.getStatus(), OrderAction.PAY)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
+
+        //4. 状态更新成功后，才推来单提醒
         Map map = new HashMap();
         map.put("type", 1);
         map.put("orderId", ordersDB.getId());
@@ -423,25 +452,24 @@ public class OrderServiceImpl implements OrderService {
             throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
         }
 
-        //2. 订单状态 1待付款 2待接单 3已接单 4派送中 5已完成 6已取消
-        //   只有待付款、待接单可以取消
-        if (ordersDB.getStatus() > Orders.TO_BE_CONFIRMED) {
-            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
-        }
-
         Orders orders = new Orders();
         orders.setId(ordersDB.getId());
 
-        //3. 待接单状态下取消，说明用户已付款，支付状态置为退款
+        //2. 待接单状态下取消，说明用户已付款，支付状态置为退款；
+        //   待付款状态下没有钱可退，不动 pay_status。
         if (Orders.TO_BE_CONFIRMED.equals(ordersDB.getStatus())) {
             orders.setPayStatus(Orders.REFUND);
         }
 
-        //4. 更新订单状态、取消原因、取消时间
-        orders.setStatus(Orders.CANCELLED);
+        //3. 更新订单状态、取消原因、取消时间。
+        //   原来用 `status > 2` 的数字大小判断，依赖状态码的排列顺序；
+        //   改用迁移表后，"哪些状态允许用户取消"只有一个出处。
         orders.setCancelReason("用户取消");
         orders.setCancelTime(LocalDateTime.now());
-        orderMapper.update(orders);
+
+        if (!orderStatusUpdater.change(orders, ordersDB.getStatus(), OrderAction.CANCEL_BY_USER)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
     }
 
     /**

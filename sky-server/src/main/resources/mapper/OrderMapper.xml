@@ -17,36 +17,37 @@
          #{deliveryStatus}, #{packAmount}, #{tablewareNumber}, #{tablewareStatus})
     </insert>
 
-    <!-- 按需更新，只改传入的字段 -->
-    <update id="update" parameterType="com.sky.entity.Orders">
+    <!--
+        带状态条件的更新（乐观锁）。
+        区别就在最后一行：where 里多了 status = #{expectedStatus}。
+        影响行数为 0 → 查到状态之后、更新之前，订单已经被别的请求改掉了
+        （用户刚付款 / 另一个管理员也点了取消 / 定时任务先跑了一步）。
+        所有状态流转都必须走这条 SQL。
+    -->
+    <update id="updateStatus">
         update orders
         <set>
-            <if test="cancelReason != null and cancelReason != ''">
-                cancel_reason = #{cancelReason},
+            status = #{order.status},
+            <if test="order.cancelReason != null and order.cancelReason != ''">
+                cancel_reason = #{order.cancelReason},
             </if>
-            <if test="rejectionReason != null and rejectionReason != ''">
-                rejection_reason = #{rejectionReason},
+            <if test="order.rejectionReason != null and order.rejectionReason != ''">
+                rejection_reason = #{order.rejectionReason},
             </if>
-            <if test="cancelTime != null">
-                cancel_time = #{cancelTime},
+            <if test="order.cancelTime != null">
+                cancel_time = #{order.cancelTime},
             </if>
-            <if test="payStatus != null">
-                pay_status = #{payStatus},
+            <if test="order.payStatus != null">
+                pay_status = #{order.payStatus},
             </if>
-            <if test="payMethod != null">
-                pay_method = #{payMethod},
+            <if test="order.checkoutTime != null">
+                checkout_time = #{order.checkoutTime},
             </if>
-            <if test="checkoutTime != null">
-                checkout_time = #{checkoutTime},
-            </if>
-            <if test="status != null">
-                status = #{status},
-            </if>
-            <if test="deliveryTime != null">
-                delivery_time = #{deliveryTime},
+            <if test="order.deliveryTime != null">
+                delivery_time = #{order.deliveryTime},
             </if>
         </set>
-        where id = #{id}
+        where id = #{order.id} and status = #{expectedStatus}
     </update>
 
     <select id="pageQuery" resultType="Orders">

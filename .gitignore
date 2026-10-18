@@ -2,8 +2,8 @@
 .idea
 *.iml
 *.class
-*Test.java
-**/test/
+# 注意：这里原本有 *Test.java 和 **/test/ 两条忽略规则（课程模板留下），
+# 会把 src/test 下的所有测试挡住 —— 已删除。测试必须能被提交。
 
 # Redis 运行时产生的持久化文件，不是源码
 dump.rdb

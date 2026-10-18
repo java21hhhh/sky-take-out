@@ -9,6 +9,13 @@
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <artifactId>sky-server</artifactId>
+
+    <properties>
+        <!-- 默认排除集成测试；要跑全部（含 @Tag("integration")）用：
+             mvn test -Dsky.test.excludedGroups= -->
+        <sky.test.excludedGroups>integration</sky.test.excludedGroups>
+    </properties>
+
     <dependencies>
 
         <dependency>
@@ -135,6 +142,15 @@
                 <configuration>
                     <source>11</source>
                     <target>11</target>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- 集成测试（@Tag("integration")）依赖本地 MySQL/Redis，默认不跑；
+                         需要时用 mvn test -Dsky.test.excludedGroups= -->
+                    <excludedGroups>${sky.test.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>
         </plugins>
