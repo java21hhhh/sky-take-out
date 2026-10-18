@@ -134,6 +134,34 @@ class OrderServiceImplTest {
     }
 
     @Test
+    @DisplayName("商家取消：已付款订单同步置为退款")
+    void cancelPaidOrderRefunds() {
+        when(orderMapper.getById(1L)).thenReturn(order(1L, Orders.TO_BE_CONFIRMED, Orders.PAID));
+        when(orderStatusUpdater.change(any(Orders.class), eq(Orders.TO_BE_CONFIRMED), eq(OrderAction.CANCEL_BY_ADMIN)))
+                .thenReturn(true);
+
+        orderService.cancel(cancelDto(1L));
+
+        ArgumentCaptor<Orders> captor = ArgumentCaptor.forClass(Orders.class);
+        verify(orderStatusUpdater).change(captor.capture(), eq(Orders.TO_BE_CONFIRMED), eq(OrderAction.CANCEL_BY_ADMIN));
+        assertEquals(Orders.REFUND, captor.getValue().getPayStatus());
+    }
+
+    @Test
+    @DisplayName("商家取消：未付款订单不动支付状态")
+    void cancelUnpaidOrderDoesNotRefund() {
+        when(orderMapper.getById(1L)).thenReturn(order(1L, Orders.PENDING_PAYMENT, Orders.UN_PAID));
+        when(orderStatusUpdater.change(any(Orders.class), eq(Orders.PENDING_PAYMENT), eq(OrderAction.CANCEL_BY_ADMIN)))
+                .thenReturn(true);
+
+        orderService.cancel(cancelDto(1L));
+
+        ArgumentCaptor<Orders> captor = ArgumentCaptor.forClass(Orders.class);
+        verify(orderStatusUpdater).change(captor.capture(), eq(Orders.PENDING_PAYMENT), eq(OrderAction.CANCEL_BY_ADMIN));
+        assertNull(captor.getValue().getPayStatus());
+    }
+
+    @Test
     @DisplayName("商家取消：订单不存在时直接报错")
     void cancelNotFound() {
         OrdersCancelDTO dto = cancelDto(99L);
@@ -163,7 +191,7 @@ class OrderServiceImplTest {
         OrdersRejectionDTO dto = new OrdersRejectionDTO();
         dto.setId(1L);
         dto.setRejectionReason("没食材了");
-        when(orderMapper.getById(1L)).thenReturn(order(1L, Orders.TO_BE_CONFIRMED));
+        when(orderMapper.getById(1L)).thenReturn(order(1L, Orders.TO_BE_CONFIRMED, Orders.PAID));
         when(orderStatusUpdater.change(any(Orders.class), eq(Orders.TO_BE_CONFIRMED), eq(OrderAction.REJECT)))
                 .thenReturn(true);
 
@@ -172,6 +200,7 @@ class OrderServiceImplTest {
         ArgumentCaptor<Orders> captor = ArgumentCaptor.forClass(Orders.class);
         verify(orderStatusUpdater).change(captor.capture(), eq(Orders.TO_BE_CONFIRMED), eq(OrderAction.REJECT));
         assertEquals("没食材了", captor.getValue().getRejectionReason());
+        assertEquals(Orders.REFUND, captor.getValue().getPayStatus(), "拒单时用户已付款，必须置退款");
     }
 
     @Test

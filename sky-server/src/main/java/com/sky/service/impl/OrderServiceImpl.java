@@ -90,6 +90,13 @@ public class OrderServiceImpl implements OrderService {
         orders.setCancelReason(ordersCancelDTO.getCancelReason());
         orders.setCancelTime(LocalDateTime.now());
 
+        // 已付款的订单（待接单 / 已接单 / 派送中）取消后必须退款；
+        // 待付款的订单没有钱可退，不动 pay_status。
+        // 原实现只改状态不退钱 —— 商家取消一单已付款的订单，用户的钱就悬空了。
+        if (Orders.PAID.equals(orderDB.getPayStatus())) {
+            orders.setPayStatus(Orders.REFUND);
+        }
+
         if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.CANCEL_BY_ADMIN)) {
             throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
         }
@@ -139,6 +146,11 @@ public class OrderServiceImpl implements OrderService {
         orders.setId(ordersRejectionDTO.getId());
         orders.setRejectionReason(ordersRejectionDTO.getRejectionReason());
         orders.setCancelTime(LocalDateTime.now());
+
+        // 拒单发生在「待接单」，此时用户已经付过款 —— 必须同步置为退款。
+        if (Orders.PAID.equals(orderDB.getPayStatus())) {
+            orders.setPayStatus(Orders.REFUND);
+        }
 
         if (!orderStatusUpdater.change(orders, orderDB.getStatus(), OrderAction.REJECT)) {
             throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
